@@ -14,148 +14,180 @@ interface GmailMessage {
   internalDate: string;
 }
 
-function extractJobData(emailContent: string) {
-  const lines = emailContent.split("\n");
-  const subject =
-    lines
-      .find((line) => line.startsWith("Subject:"))
-      ?.replace("Subject:", "")
-      .trim() || "";
+interface LLMClassificationResult {
+  isFromJobAppliedTo: boolean;
+  status:
+    | "applied"
+    | "interview"
+    | "next-phase"
+    | "offer"
+    | "rejected"
+    | "not-job-related";
+  confidence: number;
+}
 
-  const rolePatterns = [
-    /your job application for\s+([^.,!?\n\r]+)/i,
-    /Job Title:\s*\*?\*?([^*\n\r]+?)(?:Location:|Business Unit:|\*?\*?\s*$)/i,
-    /for the position of (?:the\s+)?(.+?)(?:\s+has)/i,
-    /for the (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was)/i,
-    /invite you to the next phase of (?:the\s+)?\*(.+?)\*\s*role/i,
-    /Your application was sent to [^\n]+\s*\n\s*\n([^\n]+)/i,
-    /Indeed Application:\s+([^.,!?:;\n\r()]+)/i,
-    /Subject:\s*([^-\n\r]+?)\s*-\s*[A-Za-z]/i,
-    /Thank you for applying to [^']*'s\s+(.+?)\s+role/i,
-    /Thank you very much for your recent application to the\s+(.+?)\s+position at/i,
-    /apply for the\s+([^.]+?)\s+role here at/i,
-    /your application for (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was)/i,
-    /application for (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was|\s*,|\s*and|\s*$)/i,
-    /Your Application to\s+([^.,!?:;\n\r\-()]+)\s+(?:at)/i,
-    /Application Update:\s+([^.,!?:;\n\r\-()]+)\s+(?:at)/i,
-    /position|role\s+(?:of|as)\s+([^.,!?:;\n\r\-()]+)/i,
-    /application to (?:the\s+)?([^.,!?:;\n\r()]+?)(?:\s+position|\s+role|\s*$)/i,
-    /thank you for applying to\s+(?:the\s+)?([^.,!?:;\n\r()]+?)(?:\s+position|\s+at|\s*$)/i,
-    /apply for\s+([^.,!?:;\n\r\-()]+)/i,
-    /applying for\s+([^.,!?:;\n\r\-()]+)/i,
-    /Thank you for expressing interest in the (?:the\s+)?([^.,!?\n\r]+?)\s+(?:position|role|job)/i,
-    /Thank you for your interest in (?:the\s+)?([^.,!?\n\r]+?)\s+(?:position|role|job)/i,
-    /following position:\s*([^,\n\r]+)(?:,\s*R-\d+)?/i,
-    /received your application for the role of\s+([^,\n\r]+)/i,
-    /interest in the\s+([^(#]+?)(?:\s*\([^)]*\))?\s+opportunity/i,
-    /interest you have expressed in the\s+([^.]+?)\s+position and in employment/i,
-    /your application to\s+(.+?)\s+for\s+/i,
-    /Thank you for your interest in our\s+([A-Za-z][^:.,!?\n\r]*)/i,
-  ];
+// Semaphore class to limit concurrent operations
+class Semaphore {
+  private permits: number;
+  private waiting: Array<() => void> = [];
 
-  let role = "Unknown";
-  for (const pattern of rolePatterns) {
-    const match = emailContent.match(pattern);
-    if (match && match[1] && match[1].trim().length > 0) {
-      const candidateRole = match[1]
-        .replace(/\(.*?\)/g, "")
-        .replace(
-          /\b(?:the|a|an|position|role|our|job|openings|within|company|Hiring|this)\b/gi,
-          ""
-        )
-        .trim();
-
-      const genericPhrases =
-        /^(openings?|jobs?|companies?|opportunities?|work|team)$/i;
-      const tooShort = candidateRole.length <= 4;
-      const isGeneric =
-        candidateRole.match(/^(role|position|job)$/i) ||
-        genericPhrases.test(candidateRole);
-
-      const isFragment =
-        /\b(we|you|think|cool|place|awesome|excited|super|can't|wait|be|part|of|team|member|join|joining|work|with)\b/i.test(
-          candidateRole
-        );
-
-      if (!tooShort && !isGeneric && !isFragment) {
-        role = candidateRole;
-        break;
-      }
-    }
+  constructor(permits: number) {
+    this.permits = permits;
   }
 
-  const companyPatterns = [
-    //Bottom then top regex
-    /Sincerely,\s*([A-Z][^,\n\r]*?)\s+Talent Acquisition/i,
-    /message from\s+([A-Za-z][A-Za-z\s]+)/i,
-    /^([^-]+?)\s*-\s*Thank You for Applying/i,
-    /Thank you,\s*\n\s*([A-Z][^!.,\n\r]*)/i,
-    /Thank you from\s*([A-Z][^!.,\n\r]*)/i,
-    /Thank you for applying to a position at\s+([A-Za-z][A-Za-z\s&]+?)!/i,
-    /Thank you for applying to ([^']+)'s/i,
-    /Thank you for applying to work with\s+([A-Z][^.,!?\n\r]*?)(?:\s|$)/i,
-    /Thanks for applying to\s+([A-Z][^.,!?\n\r]*?)(?:\s|$)/i,
-    /Thanks for your interest in ([^.!?\n\r]+)/i,
-    /Thank you for your interest in the following position at\s+([A-Za-z][^:.,!?\n\r]*?)\s*:/i,
-    /Thank you for your interest in\s+([A-Z][^!.,\n\r]*?)(?:\!|\s*We|\s*$)/i,
-    /applying to\s+([A-Z][^!.,\n\r]*?)(?:\!|\s*We|\s*$)/i,
-    /application via\s+([A-Z][^!.,\n\r]*)/i,
-    /position with\s+([A-Z][^.,!?\n\r]*?)(?:\.|!|\s|$)/i,
-    /Thanks!\s*([A-z0-9]*)\s+talent|team/i,
-    /Good luck!\s*([A-z0-9]*)\s+talent|team/i,
-    /best Regards,\s*([A-z0-9]*)\s+team/i,
-    /Regards,\s*\n\s*[^\n]*\n\s*([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*)\s*$/m,
-    /Regards,\s*\n\s*([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)*)\s*$/m,
-    /career opportunities with\s+([A-Z][^.,()!?\n\r]*?)(?:\s*\([^)]+\))?\./i,
-    /Kind Regards,\s*([A-Z][^,\n\r]*?)\s+Talent Acquisition|team/i,
-    /\bat\b[\s:]*([A-Z0-9][^.,!,:?\n\r\-]*?)(?=\s*[!.,]|\s+(?:has|an|the|using)|\s*$)/i,
-    /Thank you for applying to ([^.!?\n\r]+)/i,
-    /joining[\s:]+([A-Z][^.,!,:?\n\r\-]*)/i,
-    /Your application for\s+([A-Za-z][A-Za-z\s&]+)/i,
-    /received your application to be part of (?:the\s+)?([A-Z][^.,!?\n\r]*?)\s+team/i,
-    /applying to join us here at ([^,!]+)/i,
-    /Thank you for completing your\s*([A-Z][^.,!?\n\r]*)/i,
-    /with[\s:]+([A-Z][^.,!,:?\n\r\-]*)/i,
-    /position|role|job|applying at[\s:]+([A-Z0-9][^.,!,:?\n\r\-]*)/i,
-    /your interest in\s+([A-Z][^.,!?\n\r]*?)(?:\.|!|\s*,|\s+|\s*$)/i,
-    /sent to\s+([A-Z][^.,!?:;\n\r]*?)(?:\.|$)/i,
-    /The following items were sent to ([^.\n]+)/i,
-  ];
-
-  let company = "Unknown";
-
-  for (const pattern of companyPatterns) {
-    const match = subject.match(pattern);
-    if (match && match[1] && match[1].trim().length > 0) {
-      const candidateCompany = match[1]
-        .replace(/\b(intern|Company|Team|our|Application|position)\b\.?/gi, "")
-        .replace(/\b(?:the|a|an)\b/gi, "")
-        .trim();
-
-      if (candidateCompany.length > 0) {
-        company = candidateCompany;
-        break;
+  async acquire(): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.permits > 0) {
+        this.permits--;
+        resolve();
+      } else {
+        this.waiting.push(resolve);
       }
-    }
+    });
   }
 
-  if (company === "Unknown") {
-    for (const pattern of companyPatterns) {
-      const match = emailContent.match(pattern);
-      if (match && match[1] && match[1].trim().length > 0) {
-        const candidateCompany = match[1]
-          .replace(/\b(Corp|Company|Team|Hiring)\b\.?/gi, "")
-          .replace(/\b(?:the|a|an)\b/gi, "")
-          .trim();
-
-        if (candidateCompany.length > 0) {
-          company = candidateCompany;
-          break;
-        }
-      }
+  release(): void {
+    this.permits++;
+    if (this.waiting.length > 0) {
+      const next = this.waiting.shift()!;
+      this.permits--;
+      next();
     }
   }
+}
 
+//semaphores to limit concurrent operations
+const GMAIL_CONCURRENCY = 10;
+const LLM_CONCURRENCY = 5;
+
+const gmailSemaphore = new Semaphore(GMAIL_CONCURRENCY);
+const llmSemaphore = new Semaphore(LLM_CONCURRENCY);
+
+// Function to call local LLM for status classification with semaphore
+async function classifyEmailWithLLM(
+  emailContent: string,
+  subject: string
+): Promise<LLMClassificationResult> {
+  await llmSemaphore.acquire();
+
+  try {
+    const truncatedContent = emailContent.substring(0, 2000);
+
+    const prompt = `You are an assistant that classifies emails related to job applications. Return ONLY valid JSON in this exact format:
+
+{
+  "isFromJobAppliedTo": true | false,
+  "status": "applied" | "interview" | "next-phase" | "offer" | "rejected" | "not-job-related",
+  "confidence": number between 0 and 1
+}
+
+Classification rules:
+- "applied": confirmation emails ("thank you for applying")
+- "interview": scheduling interviews or assessments
+- "next-phase": moving forward in the process ("next round")
+- "offer": job offer letters, salary discussions
+- "rejected": rejections ("we regret," "not moving forward")
+- "not-job-related": newsletters, bulk postings, marketing, job recommendations
+
+If unsure, return "not-job-related" with confidence ≤ 0.6.
+
+CRITICAL: Output ONLY the JSON object. No explanations, no additional text, no multiple responses.
+
+EMAIL:
+Subject: ${subject}
+Content: ${truncatedContent}`;
+
+    const response = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "qwen2.5:3b", //Use any LLM off your choice depending on your devicee spec
+        prompt: prompt,
+        stream: false,
+        format: "json",
+        options: {
+          temperature: 0.1,
+          num_ctx: 2048,
+          top_p: 0.9,
+          repeat_penalty: 1.1,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      console.log(`LLM API error: ${response.status} - ${response.statusText}`);
+      throw new Error(`LLM API error: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log("Raw LLM response:", result.response);
+
+    // Parse the JSON response from the LLM
+    let classification: LLMClassificationResult;
+    try {
+      let jsonStr = result.response.trim();
+
+      const jsonMatch = jsonStr.match(/\{[\s\S]*?\}/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+
+      classification = JSON.parse(jsonStr);
+
+      if (typeof classification.isFromJobAppliedTo !== "boolean") {
+        throw new Error("Invalid isFromJobAppliedTo field");
+      }
+
+      if (
+        !classification.status ||
+        ![
+          "applied",
+          "interview",
+          "next-phase",
+          "offer",
+          "rejected",
+          "not-job-related",
+        ].includes(classification.status)
+      ) {
+        throw new Error("Invalid or missing status field");
+      }
+
+      if (
+        typeof classification.confidence !== "number" ||
+        classification.confidence < 0 ||
+        classification.confidence > 1
+      ) {
+        classification.confidence = 0.6;
+      }
+    } catch (parseError) {
+      console.log("LLM returned invalid JSON:", result.response);
+      console.log("Parse error:", parseError);
+      return fallbackClassification(emailContent);
+    }
+
+    // Handle not-job-related status
+    if (classification.status === "not-job-related") {
+      return {
+        isFromJobAppliedTo: false,
+        status: "not-job-related",
+        confidence: classification.confidence,
+      };
+    }
+
+    return classification;
+  } catch (error) {
+    console.log("Error calling local LLM:", error);
+    // Fallback to original logic if LLM fails
+    return fallbackClassification(emailContent);
+  } finally {
+    llmSemaphore.release();
+  }
+}
+
+// Fallback classification using original keyword-based logic
+function fallbackClassification(emailContent: string): LLMClassificationResult {
   const appliedIndicators = [
     "thanks for applying to",
     "we received your application",
@@ -179,7 +211,6 @@ function extractJobData(emailContent: string) {
     "has been received",
   ];
 
-  // Strong rejection indicators -
   const strongRejectionKeywords = [
     "you will not advance to the next stage of review",
     "we've decided not to move forward",
@@ -205,12 +236,6 @@ function extractJobData(emailContent: string) {
     "is no longer available",
     "it has not been selected for further consideration",
     "we decided to move forward with other candidates",
-  ];
-
-  const conditionalPhrases = [
-    "if you are not selected",
-    "if you are not chosen",
-    "should you not be selected",
   ];
 
   const interviewIndicators = [
@@ -239,14 +264,13 @@ function extractJobData(emailContent: string) {
 
   const lower = emailContent.toLowerCase();
 
-  const isConfirmationEmail = appliedIndicators.some((phrase) =>
-    lower.includes(phrase)
-  );
-  const hasConditionalLanguage = conditionalPhrases.some((phrase) =>
-    lower.includes(phrase)
-  );
-
-  let status = "applied";
+  let status:
+    | "applied"
+    | "interview"
+    | "next-phase"
+    | "offer"
+    | "rejected"
+    | "not-job-related" = "applied";
 
   if (offerIndicators.some((phrase) => lower.includes(phrase))) {
     status = "offer";
@@ -255,13 +279,7 @@ function extractJobData(emailContent: string) {
   } else if (nextPhaseIndicators.some((phrase) => lower.includes(phrase))) {
     status = "next-phase";
   } else if (strongRejectionKeywords.some((phrase) => lower.includes(phrase))) {
-    if (!isConfirmationEmail || !hasConditionalLanguage) {
-      status = "rejected";
-    } else {
-      status = "applied";
-    }
-  } else if (isConfirmationEmail) {
-    status = "applied";
+    status = "rejected";
   }
 
   const isJobRelated =
@@ -328,61 +346,174 @@ function extractJobData(emailContent: string) {
     return totalMatches >= 1;
   };
 
-  const isClosedJobPosting = (email: string): boolean => {
-    const closedPatterns = [
-      /job posting was closed/gi,
-      /position has been closed/gi,
-      /temporarily put.*on hold/gi,
-      /no longer accepting applications/gi,
-      /position is no longer available/gi,
-      /job has been filled/gi,
-      /posting has been removed/gi,
-      /opportunity is no longer available/gi,
-      /role has been filled/gi,
-      /position has been filled/gi,
-      /closed or temporarily put.*on hold/gi,
-      /has been closed/gi,
-    ];
-
-    const totalMatches = closedPatterns.reduce((count, pattern) => {
-      return count + (email.match(pattern)?.length || 0);
-    }, 0);
-
-    return totalMatches >= 1;
-  };
-
-  if (
-    !isJobRelated ||
-    isBulkJobAd(emailContent) ||
-    isClosedJobPosting(emailContent)
-  ) {
-    return { isJobRelated: false };
+  if (!isJobRelated || isBulkJobAd(emailContent)) {
+    return {
+      isFromJobAppliedTo: false,
+      status: "not-job-related",
+      confidence: 0.8,
+    };
   }
 
   return {
-    isJobRelated: true,
-    role: role,
-    company: company,
+    isFromJobAppliedTo: true,
     status,
+    confidence: 0.7,
   };
 }
 
-// Enhanced email body extraction function
+function extractJobData(emailContent: string, subject: string) {
+  const lines = emailContent.split("\n");
+
+  const rolePatterns = [
+    /your job application for\s+([^.,!?\n\r]+)/i,
+    /Job Title:\s*\*?\*?([^*\n\r]+?)(?:Location:|Business Unit:|\*?\*?\s*$)/i,
+    /for the position of (?:the\s+)?(.+?)(?:\s+has)/i,
+    /for the (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was)/i,
+    /invite you to the next phase of (?:the\s+)?\*(.+?)\*\s*role/i,
+    /Your application was sent to [^\n]+\s*\n\s*\n([^\n]+)/i,
+    /Indeed Application:\s+([^.,!?:;\n\r()]+)/i,
+    /Subject:\s*([^-\n\r]+?)\s*-\s*[A-Za-z]/i,
+    /Thank you for applying to [^']*'s\s+(.+?)\s+role/i,
+    /Thank you very much for your recent application to the\s+(.+?)\s+position at/i,
+    /apply for the\s+([^.]+?)\s+role here at/i,
+    /your application for (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was)/i,
+    /application for (?:the\s+)?(.+?)(?:\s+job|\s+position|\s+role|\s+was|\s*,|\s*and|\s*$)/i,
+    /Your Application to\s+([^.,!?:;\n\r\-()]+)\s+(?:at)/i,
+    /Application Update:\s+([^.,!?:;\n\r\-()]+)\s+(?:at)/i,
+    /position|role\s+(?:of|as)\s+([^.,!?:;\n\r\-()]+)/i,
+    /application to (?:the\s+)?([^.,!?:;\n\r()]+?)(?:\s+position|\s+role|\s*$)/i,
+    /thank you for applying to\s+(?:the\s+)?([^.,!?:;\n\r()]+?)(?:\s+position|\s+at|\s*$)/i,
+    /apply for\s+([^.,!?:;\n\r\-()]+)/i,
+    /applying for\s+([^.,!?:;\n\r\-()]+)/i,
+    /Thank you for expressing interest in the (?:the\s+)?([^.,!?\n\r]+?)\s+(?:position|role|job)/i,
+    /Thank you for your interest in (?:the\s+)?([^.,!?\n\r]+?)\s+(?:position|role|job)/i,
+    /following position:\s*([^,\n\r]+)(?:,\s*R-\d+)?/i,
+    /received your application for the role of\s+([^,\n\r]+)/i,
+    /interest in the\s+([^(#]+?)(?:\s*\([^)]*\))?\s+opportunity/i,
+    /interest you have expressed in the\s+([^.]+?)\s+position and in employment/i,
+    /your application to\s+(.+?)\s+for\s+/i,
+    /Thank you for your interest in our\s+([A-Za-z][^:.,!?\n\r]*)/i,
+    /Thank you for submitting your application to be a\s+([A-Za-z][^:.,!?\n\r,]*)\s+at/i,
+  ];
+
+  let role = "Unknown";
+  for (const pattern of rolePatterns) {
+    const match = emailContent.match(pattern);
+    if (match && match[1] && match[1].trim().length > 0) {
+      const candidateRole = match[1]
+        .replace(/\(.*?\)/g, "")
+        .replace(
+          /\b(?:the|a|an|position|role|our|job|openings|within|company|Hiring|this)\b/gi,
+          ""
+        )
+        .trim();
+
+      const genericPhrases =
+        /^(openings?|jobs?|companies?|opportunities?|work|team)$/i;
+      const tooShort = candidateRole.length <= 4;
+      const isGeneric =
+        candidateRole.match(/^(role|position|job)$/i) ||
+        genericPhrases.test(candidateRole);
+
+      const isFragment =
+        /\b(we|you|think|cool|place|awesome|excited|super|can't|wait|be|part|of|team|member|join|joining|work|with)\b/i.test(
+          candidateRole
+        );
+
+      if (!tooShort && !isGeneric && !isFragment) {
+        role = candidateRole;
+        break;
+      }
+    }
+  }
+
+  const companyPatterns = [
+    /Sincerely,\s*([A-Z][^,\n\r]*?)\s+Talent Acquisition/i,
+    /message from\s+([A-Za-z][A-Za-z\s]+)/i,
+    /^([^-]+?)\s*-\s*Thank You for Applying/i,
+    /Thank you,\s*\n\s*([A-Z][^!.,\n\r]*)/i,
+    /Thank you from\s*([A-Z][^!.,\n\r]*)/i,
+    /Thank you for applying to a position at\s+([A-Za-z][A-Za-z\s&]+?)!/i,
+    /Thank you for applying to ([^']+)'s/i,
+    /Thank you for applying to work with\s+([A-Z][^.,!?\n\r]*?)(?:\s|$)/i,
+    /Thanks for applying to\s+([A-Z][^.,!?\n\r]*?)(?:\s|$)/i,
+    /Thanks for your interest in ([^.!?\n\r]+)/i,
+    /Thank you for your interest in the following position at\s+([A-Za-z][^:.,!?\n\r]*?)\s*:/i,
+    /Thank you for your interest in\s+([A-Z][^!.,\n\r]*?)(?:\!|\s*We|\s*$)/i,
+    /applying to\s+([A-Z][^!.,\n\r]*?)(?:\!|\s*We|\s*$)/i,
+    /application via\s+([A-Z][^!.,\n\r]*)/i,
+    /position with\s+([A-Z][^.,!?\n\r]*?)(?:\.|!|\s|$)/i,
+    /Thanks!\s*([A-z0-9]*)\s+talent|team/i,
+    /Good luck!\s*([A-z0-9]*)\s+talent|team/i,
+    /best Regards,\s*([A-z0-9]*)\s+team/i,
+    /Regards,\s*\n\s*[^\n]*\n\s*([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*)\s*$/m,
+    /Regards,\s*\n\s*([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)*)\s*$/m,
+    /career opportunities with\s+([A-Z][^.,()!?\n\r]*?)(?:\s*\([^)]+\))?\./i,
+    /Kind Regards,\s*([A-Z][^,\n\r]*?)\s+Talent Acquisition|team/i,
+    /\bat\b[\s:]*([A-Z0-9][^.,!,:?\n\r\-]*?)(?=\s*[!.,]|\s+(?:has|an|the|using)|\s*$)/i,
+    /Thank you for applying to ([^.!?\n\r]+)/i,
+    /joining[\s:]+([A-Z][^.,!,:?\n\r\-]*)/i,
+    /Your application for\s+([A-Za-z][A-Za-z\s&]+)/i,
+    /received your application to be part of (?:the\s+)?([A-Z][^.,!?\n\r]*?)\s+team/i,
+    /applying to join us here at ([^,!]+)/i,
+    /Thank you for completing your\s*([A-Z][^.,!?\n\r]*)/i,
+    /with[\s:]+([A-Z][^.,!,:?\n\r\-]*)/i,
+    /position|role|job|applying at[\s:]+([A-Z0-9][^.,!,:?\n\r\-]*)/i,
+    /your interest in\s+([A-Z][^.,!?\n\r]*?)(?:\.|!|\s*,|\s+|\s*$)/i,
+    /sent to\s+([A-Z][^.,!?:;\n\r]*?)(?:\.|$)/i,
+    /The following items were sent to ([^.\n]+)/i,
+  ];
+
+  let company = "Unknown";
+
+  // First try to extract from subject
+  for (const pattern of companyPatterns) {
+    const match = subject.match(pattern);
+    if (match && match[1] && match[1].trim().length > 0) {
+      const candidateCompany = match[1]
+        .replace(/\b(intern|Company|Team|our|Application|position)\b\.?/gi, "")
+        .replace(/\b(?:the|a|an)\b/gi, "")
+        .trim();
+
+      if (candidateCompany.length > 0) {
+        company = candidateCompany;
+        break;
+      }
+    }
+  }
+
+  // Then try email content if not found in subject
+  if (company === "Unknown") {
+    for (const pattern of companyPatterns) {
+      const match = emailContent.match(pattern);
+      if (match && match[1] && match[1].trim().length > 0) {
+        const candidateCompany = match[1]
+          .replace(/\b(Corp|Company|Team|Hiring)\b\.?/gi, "")
+          .replace(/\b(?:the|a|an)\b/gi, "")
+          .trim();
+
+        if (candidateCompany.length > 0) {
+          company = candidateCompany;
+          break;
+        }
+      }
+    }
+  }
+
+  return { role, company };
+}
+
 function extractEmailBody(payload: gmail_v1.Schema$MessagePart): string {
   let body = "";
 
-  // Recursive function to extract text from nested parts
   const extractFromPart = (part: gmail_v1.Schema$MessagePart): string => {
     let text = "";
 
-    // Check if this part has body data
     if (part.body?.data) {
       try {
         const decoded = Buffer.from(part.body.data, "base64").toString("utf-8");
 
-        // If it's HTML, try to extract text content (simple approach)
         if (part.mimeType?.includes("text/html")) {
-          // Remove HTML tags and decode entities (ES2017 compatible)
           const htmlStripped = decoded
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -404,7 +535,6 @@ function extractEmailBody(payload: gmail_v1.Schema$MessagePart): string {
       }
     }
 
-    // Recursively process nested parts
     if (part.parts && Array.isArray(part.parts)) {
       for (const subPart of part.parts) {
         text += extractFromPart(subPart);
@@ -414,13 +544,10 @@ function extractEmailBody(payload: gmail_v1.Schema$MessagePart): string {
     return text;
   };
 
-  // Start with the main payload
   body = extractFromPart(payload);
-
   return body.trim();
 }
 
-// Helper function to check if email should be excluded
 function shouldExcludeEmail(
   emailAddress: string,
   excludedEmails: string[]
@@ -430,20 +557,16 @@ function shouldExcludeEmail(
   }
 
   const normalizedEmail = emailAddress.toLowerCase().trim();
-
-  // Extract email from format "Name <email@domain.com>"
   const extractedEmail =
     normalizedEmail.match(/<(.+)>/)?.[1] || normalizedEmail;
 
   return excludedEmails.some((excludedEmail) => {
     const normalizedExcluded = excludedEmail.toLowerCase().trim();
 
-    // Exact match
     if (extractedEmail === normalizedExcluded) {
       return true;
     }
 
-    // Domain match (e.g., exclude all emails from @noreply.company.com)
     if (
       normalizedExcluded.startsWith("@") &&
       extractedEmail.endsWith(normalizedExcluded)
@@ -451,7 +574,6 @@ function shouldExcludeEmail(
       return true;
     }
 
-    // Partial domain match (e.g., "noreply" matches any email containing "noreply")
     if (extractedEmail.includes(normalizedExcluded)) {
       return true;
     }
@@ -460,7 +582,141 @@ function shouldExcludeEmail(
   });
 }
 
-// Updated POST function with excluded emails support
+// Process a single email with semaphore for Gmail API rate limiting
+async function processEmail(
+  gmail: gmail_v1.Gmail,
+  message: gmail_v1.Schema$Message,
+  excludedEmails: string[]
+): Promise<any | null> {
+  await gmailSemaphore.acquire();
+
+  try {
+    const emailResponse = await gmail.users.messages.get({
+      userId: "me",
+      id: message.id!,
+      format: "full",
+    });
+
+    const email = emailResponse.data as GmailMessage;
+    const headers = email.payload.headers || [];
+
+    const from = headers.find((h) => h.name === "From")?.value || "";
+    const subject = headers.find((h) => h.name === "Subject")?.value || "";
+    const date = new Date(Number.parseInt(email.internalDate));
+
+    if (shouldExcludeEmail(from, excludedEmails)) {
+      return { excluded: true };
+    }
+
+    const body = extractEmailBody(email.payload);
+    const emailContent = `From: ${from}\nSubject: ${subject}\nSnippet: ${
+      email.snippet || ""
+    }\nBody: ${body}`;
+
+    // Use LLM for classification
+    const llmResult = await classifyEmailWithLLM(emailContent, subject);
+
+    if (
+      llmResult.isFromJobAppliedTo &&
+      llmResult.status !== "not-job-related"
+    ) {
+      // Extract role and company using existing regex patterns
+      const { role, company } = extractJobData(emailContent, subject);
+
+      return {
+        processed: true,
+        application: {
+          id: `gmail-${email.id}`,
+          company: company || "Unknown",
+          role: role || "Unknown",
+          status: llmResult.status,
+          email: from.match(/<(.+)>/)?.[1] || from,
+          date: date.toISOString(),
+          subject: subject,
+          bodyPreview: body.substring(0, 200),
+          confidence: llmResult.confidence || 0.5,
+          processedBy:
+            llmResult.confidence && llmResult.confidence > 0.7
+              ? "llm"
+              : "fallback",
+        },
+      };
+    }
+
+    return { processed: false, llmResult };
+  } catch (emailError) {
+    console.error("Error processing email:", emailError);
+    return null;
+  } finally {
+    gmailSemaphore.release();
+  }
+}
+
+// Process emails in batches with configurable batch size
+async function processEmailsBatch(
+  gmail: gmail_v1.Gmail,
+  messages: gmail_v1.Schema$Message[],
+  excludedEmails: string[],
+  batchSize: number = 20
+) {
+  const processedApplications = [];
+  let excludedCount = 0;
+  let llmProcessedCount = 0;
+  let fallbackCount = 0;
+
+  // Process in batches to avoid overwhelming the system
+  for (let i = 0; i < messages.length; i += batchSize) {
+    const batch = messages.slice(i, i + batchSize);
+
+    console.log(
+      `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
+        messages.length / batchSize
+      )}`
+    );
+
+    // Process all emails in the batch concurrently
+    const batchResults = await Promise.all(
+      batch.map((message) => processEmail(gmail, message, excludedEmails))
+    );
+
+    // Process results
+    for (const result of batchResults) {
+      if (!result) continue;
+
+      if (result.excluded) {
+        excludedCount++;
+      } else if (result.processed && result.application) {
+        processedApplications.push(result.application);
+
+        if (result.application.confidence > 0.7) {
+          llmProcessedCount++;
+        } else {
+          fallbackCount++;
+        }
+      } else if (result.llmResult) {
+        // Count LLM processed even if not job-related
+        if (result.llmResult.confidence > 0.7) {
+          llmProcessedCount++;
+        } else {
+          fallbackCount++;
+        }
+      }
+    }
+
+    // Small delay between batches to be respectful to APIs
+    if (i + batchSize < messages.length) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  return {
+    processedApplications,
+    excludedCount,
+    llmProcessedCount,
+    fallbackCount,
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { startDate, endDate, excludedEmails = [] } = await request.json();
@@ -514,9 +770,11 @@ export async function POST(request: NextRequest) {
       new Date(startDate).getTime() / 1000
     )} before:${Math.floor(new Date(endDate).getTime() / 1000)}`;
 
+    console.log("Fetching messages from Gmail...");
     const allMessages: gmail_v1.Schema$Message[] = [];
     let pageToken: string | undefined = undefined;
 
+    // Fetch all message IDs first
     do {
       const response: { data: gmail_v1.Schema$ListMessagesResponse } =
         await gmail.users.messages.list({
@@ -529,68 +787,24 @@ export async function POST(request: NextRequest) {
       const fetchedMessages = response.data.messages || [];
       allMessages.push(...fetchedMessages);
       pageToken = response.data.nextPageToken || undefined;
+
+      console.log(`Fetched ${allMessages.length} message IDs so far...`);
     } while (pageToken);
 
-    const processedApplications = [];
-    let excludedCount = 0;
+    console.log(`Total messages found: ${allMessages.length}`);
+    console.log("Starting parallel processing...");
 
-    for (const message of allMessages) {
-      try {
-        const emailResponse = await gmail.users.messages.get({
-          userId: "me",
-          id: message.id!,
-          format: "full",
-        });
+    // Process all emails in parallel batches
+    const {
+      processedApplications,
+      excludedCount,
+      llmProcessedCount,
+      fallbackCount,
+    } = await processEmailsBatch(gmail, allMessages, excludedEmails);
 
-        const email = emailResponse.data as GmailMessage;
-        const headers = email.payload.headers || [];
-
-        const from = headers.find((h) => h.name === "From")?.value || "";
-        const subject = headers.find((h) => h.name === "Subject")?.value || "";
-        const date = new Date(Number.parseInt(email.internalDate));
-
-        // Check if this email should be excluded
-        if (shouldExcludeEmail(from, excludedEmails)) {
-          excludedCount++;
-          continue;
-        }
-
-        // Use the improved body extraction
-        const body = extractEmailBody(email.payload);
-
-        // Enhanced email content with more context
-        const emailContent = `From: ${from}\nSubject: ${subject}\nSnippet: ${
-          email.snippet || ""
-        }\nBody: ${body}`;
-
-        const jobData = extractJobData(emailContent);
-
-        // Debugging Tool
-        // if (
-        //   emailContent.includes("Indeed Application: Jr./Mid level Java/Python")
-        // ) {
-        //   console.log("=== RAW EMAIL DEBUG ===");
-        //   console.log("Full Email Content:", emailContent);
-        //   console.log("=== END DEBUG ===");
-        // }
-
-        if (jobData.isJobRelated) {
-          processedApplications.push({
-            id: `gmail-${email.id}`,
-            company: jobData.company || "Unknown",
-            role: jobData.role || "Unknown",
-            status: jobData.status || "applied",
-            email: from.match(/<(.+)>/)?.[1] || from,
-            date: date.toISOString(),
-            subject: subject,
-            bodyPreview: body.substring(0, 200),
-          });
-        }
-      } catch (emailError) {
-        console.error("Error processing email:", emailError);
-        continue;
-      }
-    }
+    console.log(
+      `Processing complete. Found ${processedApplications.length} job applications.`
+    );
 
     return NextResponse.json({
       success: true,
@@ -599,6 +813,17 @@ export async function POST(request: NextRequest) {
       totalFound: allMessages.length,
       excludedCount: excludedCount,
       excludedEmails: excludedEmails,
+      llmProcessedCount: llmProcessedCount,
+      fallbackCount: fallbackCount,
+      performance: {
+        totalMessages: allMessages.length,
+        processingMethod: "parallel",
+        batchSize: 20,
+        concurrency: {
+          gmail: GMAIL_CONCURRENCY,
+          llm: LLM_CONCURRENCY,
+        },
+      },
     });
   } catch (error) {
     console.error("Gmail processing error:", error);
