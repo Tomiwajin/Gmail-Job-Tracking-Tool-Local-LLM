@@ -9,20 +9,8 @@ export function Footer() {
             © 2025 Job Application Tracker. All rights reserved.
           </div>
           <div className="flex space-x-6 text-sm">
-            <Link
-              href="/privacy"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Privacy Policy
-            </Link>
-            <Link
-              href="/terms"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Terms of Service
-            </Link>
             <a
-              href="https://github.com/Tomiwajin/job-app-tracker-gmail"
+              href="https://github.com/Tomiwajin/Gmail-Job-Tracking-Tool-Local-LLM.git"
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted-foreground hover:text-foreground transition-colors"
